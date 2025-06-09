@@ -1,0 +1,12 @@
+all of the information should come from a lead table.
+
+link/:phone
+
+F_Name, L_name
+phone
+zipcode
+Address (add this to the lead table)
+
+[summary of quiz answer should be create onces and then chached]
+
+[summary of sms should be create onces and then chached (untill new messages are sent)]

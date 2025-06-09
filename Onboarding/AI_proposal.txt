@@ -1,0 +1,1333 @@
+// ============================================================================
+// DIRECTORY STRUCTURE
+// ============================================================================
+
+project-root/
+├── backend/                          # NestJS Backend
+│   ├── src/
+│   │   ├── app.module.ts
+│   │   ├── main.ts
+│   │   ├── realtor/
+│   │   │   ├── realtor.controller.ts
+│   │   │   ├── realtor.service.ts
+│   │   │   └── realtor.module.ts
+│   │   ├── calendar/
+│   │   │   ├── calendar.controller.ts    # (Your existing code)
+│   │   │   ├── calendar.service.ts       # (Your existing code)
+│   │   │   └── calendar.module.ts
+│   │   ├── supabase/
+│   │   │   ├── supabase.service.ts
+│   │   │   └── supabase.module.ts
+│   │   └── scheduler/
+│   │       ├── scheduler.service.ts
+│   │       └── scheduler.module.ts
+│   ├── package.json
+│   └── .env
+│
+├── frontend/                         # React Frontend
+│   ├── public/
+│   │   └── index.html
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── RealtorForm.tsx
+│   │   │   ├── CalendarConnect.tsx
+│   │   │   └── Layout.tsx
+│   │   ├── pages/
+│   │   │   ├── Step1.tsx
+│   │   │   └── Step2.tsx
+│   │   ├── services/
+│   │   │   └── api.ts
+│   │   ├── types/
+│   │   │   └── index.ts
+│   │   ├── App.tsx
+│   │   ├── index.tsx
+│   │   └── App.css
+│   ├── package.json
+│   └── .env
+│
+└── database/
+    └── schema.sql                    # (Your existing schema)
+
+// ============================================================================
+// BACKEND CODE
+// ============================================================================
+
+// backend/src/realtor/realtor.controller.ts
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { RealtorService } from './realtor.service';
+import { CreateRealtorDto } from './dto/create-realtor.dto';
+
+@Controller('realtor')
+export class RealtorController {
+  constructor(private readonly realtorService: RealtorService) {}
+
+  @Post()
+  async createRealtor(@Body() createRealtorDto: CreateRealtorDto) {
+    return this.realtorService.create(createRealtorDto);
+  }
+
+  @Get(':id')
+  async getRealtor(@Param('id') id: number) {
+    return this.realtorService.findById(id);
+  }
+}
+
+// backend/src/realtor/realtor.service.ts
+import { Injectable } from '@nestjs/common';
+import { SupabaseService } from '../supabase/supabase.service';
+
+export interface CreateRealtorDto {
+  firstName: string;
+  lastName: string;
+  phone: string;
+  email: string;
+  website?: string;
+}
+
+@Injectable()
+export class RealtorService {
+  constructor(private readonly supabase: SupabaseService) {}
+
+  async create(data: CreateRealtorDto) {
+    const { data: realtor, error } = await this.supabase.client
+      .from('realtor')
+      .insert({
+        f_name: data.firstName,
+        e_name: data.lastName,
+        phone: data.phone,
+        email: data.email,
+        website_url: data.website,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return realtor;
+  }
+
+  async findById(id: number) {
+    const { data, error } = await this.supabase.client
+      .from('realtor')
+      .select('*')
+      .eq('realtor_id', id)
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+}
+
+// backend/src/realtor/realtor.module.ts
+import { Module } from '@nestjs/common';
+import { RealtorController } from './realtor.controller';
+import { RealtorService } from './realtor.service';
+import { SupabaseModule } from '../supabase/supabase.module';
+
+@Module({
+  imports: [SupabaseModule],
+  controllers: [RealtorController],
+  providers: [RealtorService],
+  exports: [RealtorService],
+})
+export class RealtorModule {}
+
+// backend/src/supabase/supabase.service.ts
+import { Injectable } from '@nestjs/common';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+
+@Injectable()
+export class SupabaseService {
+  public client: SupabaseClient;
+
+  constructor() {
+    this.client = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_ANON_KEY!,
+    );
+  }
+
+  async insertCredentials(realtorId: number, tokens: any) {
+    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+    
+    return this.client
+      .from('google_credentials')
+      .upsert({
+        realtor_id: realtorId,
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        token_expires: expiresAt.toISOString(),
+      });
+  }
+
+  async updateCredentials(realtorId: number, tokens: any) {
+    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+    
+    return this.client
+      .from('google_credentials')
+      .update({
+        access_token: tokens.access_token,
+        token_expires: expiresAt.toISOString(),
+      })
+      .eq('realtor_id', realtorId);
+  }
+
+  async getCredentials(realtorId: number) {
+    const { data } = await this.client
+      .from('google_credentials')
+      .select('*')
+      .eq('realtor_id', realtorId)
+      .single();
+    
+    return data;
+  }
+
+  async upsertEvent(realtorId: number, eventId: string, eventData: any) {
+    return this.client
+      .from('google_calendar_events')
+      .upsert({
+        realtor_id: realtorId,
+        google_event_id: eventId,
+        summary: eventData.summary,
+        description: eventData.description,
+        start_time: eventData.start,
+        end_time: eventData.end,
+      });
+  }
+
+  async removeEvent(eventId: string) {
+    return this.client
+      .from('google_calendar_events')
+      .delete()
+      .eq('google_event_id', eventId);
+  }
+
+  async query(path: string) {
+    const response = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${path}`, {
+      headers: {
+        'apikey': process.env.SUPABASE_ANON_KEY!,
+        'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY!}`,
+      },
+    });
+    return response.json();
+  }
+}
+
+// backend/src/app.module.ts
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { RealtorModule } from './realtor/realtor.module';
+import { CalendarModule } from './calendar/calendar.module';
+import { SupabaseModule } from './supabase/supabase.module';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    RealtorModule,
+    CalendarModule,
+    SupabaseModule,
+  ],
+})
+export class AppModule {}
+
+// ============================================================================
+// FRONTEND CODE
+// ============================================================================
+
+// frontend/src/types/index.ts
+export interface RealtorData {
+  firstName: string;
+  lastName: string;
+  phone: string;
+  email: string;
+  website?: string;
+}
+
+export interface RealtorResponse {
+  realtor_id: number;
+  f_name: string;
+  e_name: string;
+  phone: string;
+  email: string;
+  website_url?: string;
+  uuid: string;
+}
+
+// frontend/src/services/api.ts
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+
+export const api = {
+  async createRealtor(data: RealtorData) {
+    const response = await fetch(`${API_BASE_URL}/realtor`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to create realtor');
+    }
+
+    return response.json();
+  },
+
+  async getCalendarAuthUrl(realtorId: number) {
+    const response = await fetch(`${API_BASE_URL}/calendar/oauth/${realtorId}`);
+    
+    if (!response.ok) {
+      throw new Error('Failed to get auth URL');
+    }
+
+    return response.json();
+  },
+};
+
+// frontend/src/components/RealtorForm.tsx
+import React, { useState } from 'react';
+import { RealtorData } from '../types';
+
+interface RealtorFormProps {
+  onSubmit: (data: RealtorData) => void;
+  isLoading: boolean;
+}
+
+export const RealtorForm: React.FC<RealtorFormProps> = ({ onSubmit, isLoading }) => {
+  const [formData, setFormData] = useState<RealtorData>({
+    firstName: '',
+    lastName: '',
+    phone: '',
+    email: '',
+    website: '',
+  });
+
+  const [errors, setErrors] = useState<Partial<RealtorData>>({});
+
+  const validateForm = (): boolean => {
+    const newErrors: Partial<RealtorData> = {};
+
+    if (!formData.firstName.trim()) {
+      newErrors.firstName = 'First name is required';
+    }
+
+    if (!formData.lastName.trim()) {
+      newErrors.lastName = 'Last name is required';
+    }
+
+    if (!formData.phone.trim()) {
+      newErrors.phone = 'Phone number is required';
+    } else if (!/^\+?[\d\s\-\(\)]+$/.test(formData.phone)) {
+      newErrors.phone = 'Please enter a valid phone number';
+    }
+
+    if (!formData.email.trim()) {
+      newErrors.email = 'Email is required';
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      newErrors.email = 'Please enter a valid email address';
+    }
+
+    if (formData.website && !/^https?:\/\/.+/.test(formData.website)) {
+      newErrors.website = 'Please enter a valid website URL (include http:// or https://)';
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (validateForm()) {
+      onSubmit(formData);
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+    
+    // Clear error when user starts typing
+    if (errors[name as keyof RealtorData]) {
+      setErrors(prev => ({ ...prev, [name]: undefined }));
+    }
+  };
+
+  return (
+    <div className="form-container">
+      <div className="form-card">
+        <h1>Realtor Registration</h1>
+        <p className="form-subtitle">
+          Please provide your information to get started with our lead generation platform.
+        </p>
+        
+        <form onSubmit={handleSubmit} className="realtor-form">
+          <div className="form-row">
+            <div className="form-group">
+              <label htmlFor="firstName">First Name *</label>
+              <input
+                type="text"
+                id="firstName"
+                name="firstName"
+                value={formData.firstName}
+                onChange={handleChange}
+                className={errors.firstName ? 'error' : ''}
+                disabled={isLoading}
+              />
+              {errors.firstName && <span className="error-message">{errors.firstName}</span>}
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="lastName">Last Name *</label>
+              <input
+                type="text"
+                id="lastName"
+                name="lastName"
+                value={formData.lastName}
+                onChange={handleChange}
+                className={errors.lastName ? 'error' : ''}
+                disabled={isLoading}
+              />
+              {errors.lastName && <span className="error-message">{errors.lastName}</span>}
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="phone">Phone Number *</label>
+            <input
+              type="tel"
+              id="phone"
+              name="phone"
+              value={formData.phone}
+              onChange={handleChange}
+              className={errors.phone ? 'error' : ''}
+              disabled={isLoading}
+              placeholder="(555) 123-4567"
+            />
+            {errors.phone && <span className="error-message">{errors.phone}</span>}
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="email">Email Address *</label>
+            <input
+              type="email"
+              id="email"
+              name="email"
+              value={formData.email}
+              onChange={handleChange}
+              className={errors.email ? 'error' : ''}
+              disabled={isLoading}
+              placeholder="john.doe@example.com"
+            />
+            {errors.email && <span className="error-message">{errors.email}</span>}
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="website">Website (Optional)</label>
+            <input
+              type="url"
+              id="website"
+              name="website"
+              value={formData.website}
+              onChange={handleChange}
+              className={errors.website ? 'error' : ''}
+              disabled={isLoading}
+              placeholder="https://your-website.com"
+            />
+            {errors.website && <span className="error-message">{errors.website}</span>}
+          </div>
+
+          <button 
+            type="submit" 
+            className="submit-button"
+            disabled={isLoading}
+          >
+            {isLoading ? 'Creating Account...' : 'Continue to Calendar Setup'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// frontend/src/components/CalendarConnect.tsx
+import React, { useState, useEffect } from 'react';
+import { api } from '../services/api';
+
+interface CalendarConnectProps {
+  realtorId: number;
+  realtorName: string;
+}
+
+export const CalendarConnect: React.FC<CalendarConnectProps> = ({ 
+  realtorId, 
+  realtorName 
+}) => {
+  const [authUrl, setAuthUrl] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string>('');
+
+  useEffect(() => {
+    const fetchAuthUrl = async () => {
+      try {
+        setIsLoading(true);
+        const response = await api.getCalendarAuthUrl(realtorId);
+        setAuthUrl(response.url);
+      } catch (err) {
+        setError('Failed to generate calendar connection link. Please try again.');
+        console.error('Error fetching auth URL:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchAuthUrl();
+  }, [realtorId]);
+
+  const handleConnectCalendar = () => {
+    if (authUrl) {
+      window.open(authUrl, '_blank', 'width=600,height=600');
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="calendar-connect">
+        <div className="loading-spinner">
+          <div className="spinner"></div>
+          <p>Generating calendar connection link...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="calendar-connect">
+      <div className="success-card">
+        <div className="success-icon">✅</div>
+        <h1>Welcome, {realtorName}!</h1>
+        <p className="success-message">
+          Your account has been created successfully. Now let's connect your Google Calendar 
+          to start managing your appointments and leads.
+        </p>
+
+        <div className="calendar-info">
+          <h3>Why Connect Your Calendar?</h3>
+          <ul>
+            <li>Automatically sync your availability</li>
+            <li>Prevent double-booking</li>
+            <li>Allow leads to book appointments directly</li>
+            <li>Receive notifications for new bookings</li>
+          </ul>
+        </div>
+
+        {error && (
+          <div className="error-banner">
+            <span className="error-icon">⚠️</span>
+            {error}
+          </div>
+        )}
+
+        <button 
+          onClick={handleConnectCalendar}
+          className="connect-button"
+          disabled={!authUrl || !!error}
+        >
+          <span className="calendar-icon">📅</span>
+          Connect Google Calendar
+        </button>
+
+        <p className="help-text">
+          You'll be redirected to Google to authorize the connection. 
+          This is secure and you can revoke access at any time.
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// frontend/src/App.tsx
+import React, { useState } from 'react';
+import { RealtorForm } from './components/RealtorForm';
+import { CalendarConnect } from './components/CalendarConnect';
+import { api } from './services/api';
+import { RealtorData, RealtorResponse } from './types';
+import './App.css';
+
+type Step = 'form' | 'calendar';
+
+function App() {
+  const [currentStep, setCurrentStep] = useState<Step>('form');
+  const [isLoading, setIsLoading] = useState(false);
+  const [realtor, setRealtor] = useState<RealtorResponse | null>(null);
+  const [error, setError] = useState<string>('');
+
+  const handleRealtorSubmit = async (data: RealtorData) => {
+    try {
+      setIsLoading(true);
+      setError('');
+      
+      const response = await api.createRealtor(data);
+      setRealtor(response);
+      setCurrentStep('calendar');
+    } catch (err) {
+      setError('Failed to create account. Please try again.');
+      console.error('Error creating realtor:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="App">
+      {error && (
+        <div className="error-banner">
+          <span className="error-icon">⚠️</span>
+          {error}
+          <button onClick={() => setError('')} className="close-error">×</button>
+        </div>
+      )}
+
+      {currentStep === 'form' && (
+        <RealtorForm onSubmit={handleRealtorSubmit} isLoading={isLoading} />
+      )}
+
+      {currentStep === 'calendar' && realtor && (
+        <CalendarConnect 
+          realtorId={realtor.realtor_id}
+          realtorName={`${realtor.f_name} ${realtor.e_name}`}
+        />
+      )}
+    </div>
+  );
+}
+
+export default App;
+
+// ============================================================================
+// FRONTEND STYLES
+// ============================================================================
+
+// frontend/src/App.css
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+}
+
+.App {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+/* Form Styles */
+.form-container {
+  width: 100%;
+  max-width: 600px;
+}
+
+.form-card {
+  background: white;
+  border-radius: 12px;
+  padding: 40px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+}
+
+.form-card h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #1a202c;
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.form-subtitle {
+  color: #718096;
+  text-align: center;
+  margin-bottom: 32px;
+  font-size: 1.1rem;
+}
+
+.realtor-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group label {
+  font-weight: 600;
+  color: #2d3748;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+
+.form-group input {
+  padding: 12px 16px;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 1rem;
+  transition: all 0.2s;
+  background: white;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.form-group input.error {
+  border-color: #e53e3e;
+}
+
+.form-group input:disabled {
+  background: #f7fafc;
+  cursor: not-allowed;
+}
+
+.error-message {
+  color: #e53e3e;
+  font-size: 0.875rem;
+  margin-top: 4px;
+}
+
+.submit-button {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  padding: 16px 32px;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 16px;
+}
+
+.submit-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px -5px rgba(102, 126, 234, 0.4);
+}
+
+.submit-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Calendar Connect Styles */
+.calendar-connect {
+  width: 100%;
+  max-width: 600px;
+}
+
+.success-card {
+  background: white;
+  border-radius: 12px;
+  padding: 40px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+  text-align: center;
+}
+
+.success-icon {
+  font-size: 4rem;
+  margin-bottom: 16px;
+}
+
+.success-card h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #1a202c;
+  margin-bottom: 16px;
+}
+
+.success-message {
+  color: #718096;
+  font-size: 1.1rem;
+  margin-bottom: 32px;
+  line-height: 1.6;
+}
+
+.calendar-info {
+  background: #f7fafc;
+  border-radius: 8px;
+  padding: 24px;
+  margin-bottom: 32px;
+  text-align: left;
+}
+
+.calendar-info h3 {
+  color: #2d3748;
+  margin-bottom: 16px;
+  font-size: 1.2rem;
+}
+
+.calendar-info ul {
+  list-style: none;
+}
+
+.calendar-info li {
+  color: #4a5568;
+  margin-bottom: 8px;
+  padding-left: 24px;
+  position: relative;
+}
+
+.calendar-info li::before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  color: #48bb78;
+  font-weight: bold;
+}
+
+.connect-button {
+  background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+  color: white;
+  border: none;
+  padding: 16px 32px;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.connect-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px -5px rgba(72, 187, 120, 0.4);
+}
+
+.connect-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.calendar-icon {
+  font-size: 1.2rem;
+}
+
+.help-text {
+  color: #718096;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* Loading Styles */
+.loading-spinner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 60px 40px;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #e2e8f0;
+  border-top: 4px solid #667eea;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Error Banner */
+.error-banner {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fed7d7;
+  color: #c53030;
+  padding: 12px 20px;
+  border-radius: 8px;
+  border: 1px solid #feb2b2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 1000;
+  max-width: 90%;
+}
+
+.error-icon {
+  font-size: 1.1rem;
+}
+
+.close-error {
+  background: none;
+  border: none;
+  color: #c53030;
+  font-size: 1.2rem;
+  cursor: pointer;
+  margin-left: 8px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .form-card, .success-card {
+    padding: 24px;
+    margin: 0 16px;
+  }
+  
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+  
+  .form-card h1, .success-card h1 {
+    font-size: 2rem;
+  }
+}
+
+// ============================================================================
+// PACKAGE.JSON FILES
+// ============================================================================
+
+// backend/package.json
+{
+  "name": "realtor-backend",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/config": "^3.0.0",
+    "@nestjs/platform-express": "^10.0.0",
+    "@supabase/supabase-js": "^2.38.0",
+    "reflect-metadata": "^0.1.13",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.0",
+    "@nestjs/schematics": "^10.0.0",
+    "@types/node": "^20.3.1",
+    "typescript": "^5.1.3"
+  }
+}
+
+// frontend/package.json
+{
+  "name": "realtor-frontend",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "typescript": "^4.9.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.15",
+    "@types/react-dom": "^18.2.7"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
+
+// ============================================================================
+// ENVIRONMENT FILES
+// ============================================================================
+
+// backend/.env
+SUPABASE_URL=your_supabase_url
+SUPABASE_ANON_KEY=your_supabase_anon_key
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+GOOGLE_REDIRECT_URI=http://localhost:3001/calendar/oauth/callback
+PORT=3001
+
+// frontend/.env
+REACT_APP_API_URL=http://localhost:3001
+
+// ============================================================================
+// ADDITIONAL BACKEND FILES
+// ============================================================================
+
+// backend/src/supabase/supabase.module.ts
+import { Module } from '@nestjs/common';
+import { SupabaseService } from './supabase.service';
+
+@Module({
+  providers: [SupabaseService],
+  exports: [SupabaseService],
+})
+export class SupabaseModule {}
+
+// backend/src/calendar/calendar.module.ts
+import { Module } from '@nestjs/common';
+import { CalendarController } from './calendar.controller';
+import { CalendarService } from './calendar.service';
+import { SupabaseModule } from '../supabase/supabase.module';
+import { SchedulerModule } from '../scheduler/scheduler.module';
+
+@Module({
+  imports: [SupabaseModule, SchedulerModule],
+  controllers: [CalendarController],
+  providers: [CalendarService],
+  exports: [CalendarService],
+})
+export class CalendarModule {}
+
+// backend/src/scheduler/scheduler.service.ts
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class SchedulerService {
+  async scheduleFollowUps(phone: string, appointmentTime: string) {
+    // Implementation for scheduling follow-up messages
+    // This would integrate with your SMS service (Twilio, etc.)
+    console.log(`Scheduling follow-ups for ${phone} at ${appointmentTime}`);
+    
+    // Example: Schedule reminder 24 hours before appointment
+    const appointmentDate = new Date(appointmentTime);
+    const reminderDate = new Date(appointmentDate.getTime() - 24 * 60 * 60 * 1000);
+    
+    // Add to scheduled_messages table or queue
+    // Implementation depends on your scheduling system
+  }
+}
+
+// backend/src/scheduler/scheduler.module.ts
+import { Module } from '@nestjs/common';
+import { SchedulerService } from './scheduler.service';
+
+@Module({
+  providers: [SchedulerService],
+  exports: [SchedulerService],
+})
+export class SchedulerModule {}
+
+// backend/src/main.ts
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  
+  // Enable CORS for frontend communication
+  app.enableCors({
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    credentials: true,
+  });
+  
+  const port = process.env.PORT || 3001;
+  await app.listen(port);
+  console.log(`Backend running on http://localhost:${port}`);
+}
+bootstrap();
+
+// ============================================================================
+// ADDITIONAL FRONTEND FILES
+// ============================================================================
+
+// frontend/src/index.tsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import './index.css';
+import App from './App';
+
+const root = ReactDOM.createRoot(
+  document.getElementById('root') as HTMLElement
+);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+// frontend/src/index.css
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+// frontend/public/index.html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="description"
+      content="Realtor Lead Generation Platform - Connect your calendar and manage leads"
+    />
+    <title>Realtor Interface - Lead Generation</title>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+  </body>
+</html>
+
+// ============================================================================
+// ADDITIONAL COMPONENTS
+// ============================================================================
+
+// frontend/src/components/Layout.tsx
+import React from 'react';
+
+interface LayoutProps {
+  children: React.ReactNode;
+  title?: string;
+}
+
+export const Layout: React.FC<LayoutProps> = ({ children, title }) => {
+  return (
+    <div className="layout">
+      <header className="header">
+        <div className="header-content">
+          <h1 className="logo">RealEstate Pro</h1>
+          {title && <h2 className="page-title">{title}</h2>}
+        </div>
+      </header>
+      <main className="main-content">
+        {children}
+      </main>
+      <footer className="footer">
+        <p>&copy; 2024 RealEstate Pro. All rights reserved.</p>
+      </footer>
+    </div>
+  );
+};
+
+// frontend/src/pages/Step1.tsx
+import React from 'react';
+import { Layout } from '../components/Layout';
+import { RealtorForm } from '../components/RealtorForm';
+import { RealtorData } from '../types';
+
+interface Step1Props {
+  onSubmit: (data: RealtorData) => void;
+  isLoading: boolean;
+}
+
+export const Step1: React.FC<Step1Props> = ({ onSubmit, isLoading }) => {
+  return (
+    <Layout title="Step 1: Registration">
+      <RealtorForm onSubmit={onSubmit} isLoading={isLoading} />
+    </Layout>
+  );
+};
+
+// frontend/src/pages/Step2.tsx
+import React from 'react';
+import { Layout } from '../components/Layout';
+import { CalendarConnect } from '../components/CalendarConnect';
+
+interface Step2Props {
+  realtorId: number;
+  realtorName: string;
+}
+
+export const Step2: React.FC<Step2Props> = ({ realtorId, realtorName }) => {
+  return (
+    <Layout title="Step 2: Calendar Integration">
+      <CalendarConnect realtorId={realtorId} realtorName={realtorName} />
+    </Layout>
+  );
+};
+
+// ============================================================================
+// ENHANCED API SERVICE
+// ============================================================================
+
+// Enhanced frontend/src/services/api.ts
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+
+export interface ApiError {
+  message: string;
+  statusCode?: number;
+}
+
+class ApiService {
+  private async request<T>(
+    endpoint: string, 
+    options: RequestInit = {}
+  ): Promise<T> {
+    const url = `${API_BASE_URL}${endpoint}`;
+    
+    const config: RequestInit = {
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      ...options,
+    };
+
+    try {
+      const response = await fetch(url, config);
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(
+          errorData.message || `HTTP ${response.status}: ${response.statusText}`
+        );
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error(`API Error [${endpoint}]:`, error);
+      throw error;
+    }
+  }
+
+  async createRealtor(data: RealtorData) {
+    return this.request('/realtor', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getRealtor(id: number) {
+    return this.request(`/realtor/${id}`);
+  }
+
+  async getCalendarAuthUrl(realtorId: number) {
+    return this.request(`/calendar/oauth/${realtorId}`);
+  }
+
+  async getBookedSlots(realtorId: number, date: string) {
+    return this.request(`/calendar/${realtorId}/booked?date=${date}`);
+  }
+
+  async getOpenSlots(realtorId: number, date: string) {
+    return this.request(`/calendar/${realtorId}/openings?date=${date}`);
+  }
+}
+
+export const api = new ApiService();
+
+// ============================================================================
+// INSTALLATION & SETUP INSTRUCTIONS
+// ============================================================================
+
+/*
+INSTALLATION INSTRUCTIONS:
+
+1. Setup Backend:
+   cd backend
+   npm install
+   
+   Create .env file with your Supabase and Google OAuth credentials:
+   SUPABASE_URL=your_supabase_url
+   SUPABASE_ANON_KEY=your_supabase_anon_key
+   GOOGLE_CLIENT_ID=your_google_client_id
+   GOOGLE_CLIENT_SECRET=your_google_client_secret
+   GOOGLE_REDIRECT_URI=http://localhost:3001/calendar/oauth/callback
+   PORT=3001
+
+   Run the database schema (your existing schema.sql)
+   npm run start:dev
+
+2. Setup Frontend:
+   cd frontend
+   npm install
+   
+   Create .env file:
+   REACT_APP_API_URL=http://localhost:3001
+   
+   npm start
+
+3. Google OAuth Setup:
+   - Go to Google Cloud Console
+   - Create a new project or select existing
+   - Enable Google Calendar API
+   - Create OAuth 2.0 credentials
+   - Add http://localhost:3001/calendar/oauth/callback to authorized redirect URIs
+   - Copy client ID and secret to backend .env
+
+4. Supabase Setup:
+   - Create Supabase project
+   - Run the provided schema.sql
+   - Copy URL and anon key to backend .env
+   - Ensure RLS policies allow your application access
+
+FEATURES:
+✅ Two-step realtor registration process
+✅ Form validation and error handling
+✅ Professional, responsive UI design
+✅ Google Calendar OAuth integration
+✅ Supabase database integration
+✅ Error handling and loading states
+✅ Mobile-responsive design
+✅ TypeScript support
+✅ Modular, maintainable code structure
+
+WORKFLOW:
+1. Realtor fills out registration form (Step 1)
+2. Data is validated and sent to Supabase
+3. Success page shows with calendar connection link (Step 2)
+4. Realtor clicks to connect Google Calendar
+5. OAuth flow completes and calendar is linked
+6. Realtor can now receive bookings from leads
+
+API ENDPOINTS:
+POST /realtor - Create new realtor
+GET /realtor/:id - Get realtor by ID
+GET /calendar/oauth/:realtorId - Get Google OAuth URL
+GET /calendar/oauth/callback - Handle OAuth callback
+POST /calendar/:realtorId/events - Add calendar event
+GET /calendar/:realtorId/booked - Get booked time slots
+GET /calendar/:realtorId/openings - Get available time slots
+
+The system integrates with your existing calendar service code for managing appointments and follow-up messaging.
+*/
