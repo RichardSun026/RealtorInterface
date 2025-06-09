@@ -30,3 +30,16 @@ CREATE TABLE IF NOT EXISTS public.google_calendar_events (
    end_time        timestamptz not null,
    created_at      timestamptz default now()
 );
+
+-- Lead table used for generating user reports
+CREATE TABLE IF NOT EXISTS public.lead (
+   lead_id      bigserial primary key,
+   phone        varchar(50) not null unique,
+   f_name       varchar(125) not null,
+   l_name       varchar(125) not null,
+   zipcode      varchar(20),
+   address      varchar(255),
+   quiz_summary text,
+   sms_summary  text,
+   created_at   timestamptz default now()
+);

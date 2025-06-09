@@ -16,4 +16,10 @@ export const api = {
     if (!response.ok) throw new Error('Failed to get auth URL');
     return response.json();
   },
+
+  async getLead(phone: string) {
+    const response = await fetch(`${API_BASE_URL}/userreport/${encodeURIComponent(phone)}`);
+    if (!response.ok) throw new Error('Failed to load lead');
+    return response.json();
+  },
 };
